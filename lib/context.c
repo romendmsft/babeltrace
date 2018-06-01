@@ -40,13 +40,24 @@
 #include <string.h>
 #include <assert.h>
 #include <errno.h>
+#include <ftw.h>
 
 #include <fcntl.h> /* For O_RDONLY */
 
 #include <glib.h>
 
+#define NET_URL_PREFIX	"net://"
+#define NET4_URL_PREFIX	"net4://"
+#define NET6_URL_PREFIX	"net6://"
+
 static
 void remove_trace_handle(struct bt_trace_handle *handle);
+
+static
+int traverse_trace_dir(const char *fpath, const struct stat *sb,
+			int tflag, struct FTW *ftwbuf);
+
+static GPtrArray *traversed_paths = 0;
 
 struct bt_context *bt_context_create(void)
 {
@@ -173,6 +184,69 @@ end:
 	return ret;
 }
 
+int bt_context_add_traces_recursive(struct bt_context *ctx, const char *path,
+		const char *format_str,
+		void (*packet_seek)(struct bt_stream_pos *pos,
+			size_t offset, int whence))
+{
+	int ret = 0, trace_ids = 0;
+
+	if ((strncmp(path, NET4_URL_PREFIX, sizeof(NET4_URL_PREFIX) - 1)) == 0 ||
+			(strncmp(path, NET6_URL_PREFIX, sizeof(NET6_URL_PREFIX) - 1)) == 0 ||
+			(strncmp(path, NET_URL_PREFIX, sizeof(NET_URL_PREFIX) - 1)) == 0) {
+		ret = bt_context_add_trace(ctx,
+				path, format_str, packet_seek, NULL, NULL);
+		if (ret < 0) {
+			fprintf(stderr, "[warning] [Context] cannot open trace \"%s\" "
+					"for reading.\n", path);
+		}
+		return ret;
+	}
+	/* Should lock traversed_paths mutex here if used in multithread */
+
+	traversed_paths = g_ptr_array_new();
+	ret = nftw(path, traverse_trace_dir, 10, 0);
+
+	/* Process the array if ntfw did not return a fatal error */
+	if (ret >= 0) {
+		int i;
+
+		for (i = 0; i < traversed_paths->len; i++) {
+			GString *trace_path = g_ptr_array_index(traversed_paths,
+								i);
+			int trace_id = bt_context_add_trace(ctx,
+							    trace_path->str,
+							    format_str,
+							    packet_seek,
+							    NULL,
+							    NULL);
+			if (trace_id < 0) {
+				fprintf(stderr, "[warning] [Context] cannot open trace \"%s\" from %s "
+					"for reading.\n", trace_path->str, path);
+				/* Allow to skip erroneous traces. */
+				ret = 1;	/* partial error */
+			} else {
+				trace_ids++;
+			}
+			g_string_free(trace_path, TRUE);
+		}
+	}
+
+	g_ptr_array_free(traversed_paths, TRUE);
+	traversed_paths = NULL;
+
+	/* Should unlock traversed paths mutex here if used in multithread */
+
+	/*
+	 * Return an error if no trace can be opened.
+	 */
+	if (trace_ids == 0) {
+		fprintf(stderr, "[error] Cannot open any trace for reading.\n\n");
+		ret = -ENOENT;		/* failure */
+	}
+	return ret;
+}
+
 int bt_context_remove_trace(struct bt_context *ctx, int handle_id)
 {
 	int ret = 0;
@@ -244,4 +318,65 @@ void remove_trace_handle(struct bt_trace_handle *handle)
 	}
 
 	bt_trace_handle_destroy(handle);
+}
+
+/*
+ * traverse_trace_dir() is the callback function for File Tree Walk (nftw).
+ * it receives the path of the current entry (file, dir, link..etc) with
+ * a flag to indicate the type of the entry.
+ * if the entry being visited is a directory and contains a metadata file,
+ * then add the path to a global list to be processed later in
+ * add_traces_recursive.
+ */
+static
+int traverse_trace_dir(const char *fpath, const struct stat *sb,
+			int tflag, struct FTW *ftwbuf)
+{
+	int dirfd, metafd;
+	int closeret;
+
+	if (tflag != FTW_D)
+		return 0;
+
+	dirfd = open(fpath, 0);
+	if (dirfd < 0) {
+		fprintf(stderr, "[error] [Context] Unable to open trace "
+			"directory file descriptor.\n");
+		return 0;	/* partial error */
+	}
+	metafd = openat(dirfd, "metadata", O_RDONLY);
+	if (metafd < 0) {
+		closeret = close(dirfd);
+		if (closeret < 0) {
+			perror("close");
+			return -1;
+		}
+		/* No meta data, just return */
+		return 0;
+	} else {
+		int err_close = 0;
+
+		closeret = close(metafd);
+		if (closeret < 0) {
+			perror("close");
+			err_close = 1;
+		}
+		closeret = close(dirfd);
+		if (closeret < 0) {
+			perror("close");
+			err_close = 1;
+		}
+		if (err_close) {
+			return -1;
+		}
+
+		/* Add path to the global list */
+		if (traversed_paths == NULL) {
+			fprintf(stderr, "[error] [Context] Invalid open path array.\n");
+			return -1;
+		}
+		g_ptr_array_add(traversed_paths, g_string_new(fpath));
+	}
+
+	return 0;
 }
