@@ -166,6 +166,22 @@ const char *bt_ctf_event_name(const struct bt_ctf_event *ctf_event)
 	return g_quark_to_string(event_class->name);
 }
 
+int bt_ctf_event_loglevel(const struct bt_ctf_event *ctf_event)
+{
+	const struct ctf_event_declaration *event_class;
+	const struct ctf_stream_declaration *stream_class;
+	const struct ctf_event_definition *event;
+
+	if (!ctf_event)
+		return -EINVAL;
+
+	event = ctf_event->parent;
+	stream_class = event->stream->stream_class;
+	event_class = g_ptr_array_index(stream_class->events_by_id,
+			event->stream->event_id);
+	return event_class->loglevel;
+}
+
 const char *bt_ctf_field_name(const struct bt_definition *def)
 {
 	if (!def || !def->name)
@@ -732,6 +748,14 @@ const char *bt_ctf_get_decl_event_name(const struct bt_ctf_event_decl *event)
 		return NULL;
 
 	return g_quark_to_string(event->parent.name);
+}
+
+int bt_ctf_get_decl_event_loglevel(const struct bt_ctf_event_decl *event)
+{
+	if (!event)
+		return -EINVAL;
+
+	return event->parent.loglevel;
 }
 
 int bt_ctf_get_decl_fields(struct bt_ctf_event_decl *event_decl,
