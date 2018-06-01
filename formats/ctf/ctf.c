@@ -36,6 +36,7 @@
 #include <babeltrace/context-internal.h>
 #include <babeltrace/compat/uuid.h>
 #include <babeltrace/endian.h>
+#include <babeltrace/error.h>
 #include <babeltrace/trace-debug-info.h>
 #include <babeltrace/ctf/ctf-index.h>
 #include <inttypes.h>
@@ -161,6 +162,14 @@ struct bt_format ctf_format = {
 	.timestamp_end = ctf_timestamp_end,
 	.convert_index_timestamp = ctf_convert_index_timestamp,
 };
+
+void bt_ctf_hook(void)
+{
+	/*
+	 * Dummy function to prevent the linker from discarding this format as
+	 * "unused" in static builds.
+	 */
+}
 
 static
 uint64_t ctf_timestamp_begin(struct bt_trace_descriptor *descriptor,
@@ -433,7 +442,6 @@ void print_uuid(FILE *fp, unsigned char *uuid)
  * consumer had time to extract them. We keep track of those gaps with the
  * packet sequence number in each packet.
  */
-static
 void ctf_print_discarded_lost(FILE *fp, struct ctf_stream_definition *stream)
 {
 	if ((!stream->events_discarded && !stream->packets_lost) ||
@@ -477,6 +485,29 @@ void ctf_print_discarded_lost(FILE *fp, struct ctf_stream_definition *stream)
 }
 
 static
+void ctf_print_truncated_packet(FILE *fp, struct ctf_stream_definition *stream,
+		uint64_t packet_size, uint64_t remaining_file_size)
+{
+	fprintf(fp, "[error] Packet size (%" PRIu64 " bits) is larger than remaining file size (%" PRIu64 " bits) in trace with UUID \"",
+			packet_size, remaining_file_size);
+	print_uuid(fp, stream->stream_class->trace->uuid);
+	fprintf(fp, "\"");
+
+	if (stream->stream_class->trace->parent.path[0] != '\0') {
+		fprintf(fp, ", at path: \"%s\"",
+				stream->stream_class->trace->parent.path);
+	}
+
+	fprintf(fp, ", within stream id %" PRIu64, stream->stream_id);
+	if (stream->path[0] != '\0') {
+		fprintf(fp, ", at relative path: \"%s\"", stream->path);
+	}
+
+	fprintf(fp, ".\n");
+	fflush(fp);
+}
+
+static
 int ctf_read_event(struct bt_stream_pos *ppos, struct ctf_stream_definition *stream)
 {
 	struct ctf_stream_pos *pos =
@@ -490,7 +521,12 @@ int ctf_read_event(struct bt_stream_pos *ppos, struct ctf_stream_definition *str
 	if (unlikely(pos->offset == EOF))
 		return EOF;
 
-	ctf_pos_get_event(pos);
+	ret = ctf_pos_get_event(pos);
+	if (ret == -BT_PACKET_SEEK_ERROR_TRUNCATED_PACKET) {
+		return -ERANGE;
+	} else if (ret) {
+		return EOF;
+	}
 
 	/* save the current position as a restore point */
 	pos->last_offset = pos->offset;
@@ -1057,7 +1093,8 @@ void ctf_packet_seek(struct bt_stream_pos *stream_pos, size_t index, int whence)
 	case SEEK_SET:	/* Fall-through */
 		break;	/* OK */
 	default:
-		assert(0);
+		ret = -BT_PACKET_SEEK_ERROR;
+		goto end;
 	}
 
 	if ((pos->prot & PROT_WRITE) && pos->content_size_loc)
@@ -1069,7 +1106,8 @@ void ctf_packet_seek(struct bt_stream_pos *stream_pos, size_t index, int whence)
 		if (ret) {
 			fprintf(stderr, "[error] Unable to unmap old base: %s.\n",
 				strerror(errno));
-			assert(0);
+			ret = -BT_PACKET_SEEK_ERROR;
+			goto end;
 		}
 		pos->base_mma = NULL;
 	}
@@ -1089,7 +1127,8 @@ void ctf_packet_seek(struct bt_stream_pos *stream_pos, size_t index, int whence)
 			pos->cur_index = 0;
 			break;
 		default:
-			assert(0);
+			ret = -BT_PACKET_SEEK_ERROR;
+			goto end;
 		}
 		pos->content_size = -1U;	/* Unknown at this point */
 		pos->packet_size = WRITE_PACKET_LEN;
@@ -1100,12 +1139,14 @@ void ctf_packet_seek(struct bt_stream_pos *stream_pos, size_t index, int whence)
 		assert(ret == 0);
 		pos->offset = 0;
 	} else {
+		uint64_t remaining_file_size;
 	read_next_packet:
 		switch (whence) {
 		case SEEK_CUR:
 		{
 			if (pos->offset == EOF) {
-				return;
+				ret = 0;
+				goto end;
 			}
 			assert(pos->cur_index < pos->packet_index->len);
 			/* The reader will expect us to skip padding */
@@ -1115,17 +1156,20 @@ void ctf_packet_seek(struct bt_stream_pos *stream_pos, size_t index, int whence)
 		case SEEK_SET:
 			if (index >= pos->packet_index->len) {
 				pos->offset = EOF;
-				return;
+				ret = 0;
+				goto end;
 			}
 			pos->cur_index = index;
 			break;
 		default:
-			assert(0);
+			ret = -BT_PACKET_SEEK_ERROR;
+			goto end;
 		}
 
 		if (pos->cur_index >= pos->packet_index->len) {
 			pos->offset = EOF;
-			return;
+			ret = 0;
+			goto end;
 		}
 
 		packet_index = &g_array_index(pos->packet_index,
@@ -1139,6 +1183,12 @@ void ctf_packet_seek(struct bt_stream_pos *stream_pos, size_t index, int whence)
 		}
 		ctf_update_current_packet_index(&file_stream->parent,
 				prev_index, packet_index);
+
+		if (pos->cur_index >= pos->packet_index->len) {
+			pos->offset = EOF;
+			ret = 0;
+			goto end;
+		}
 
 		/*
 		 * We need to check if we are in trace read or called
@@ -1161,9 +1211,22 @@ void ctf_packet_seek(struct bt_stream_pos *stream_pos, size_t index, int whence)
 		if (packet_index->data_offset == -1) {
 			ret = find_data_offset(pos, file_stream, packet_index);
 			if (ret < 0) {
-				return;
+				ret = -BT_PACKET_SEEK_ERROR;
+				goto end;
 			}
 		}
+
+		remaining_file_size = (pos->file_length - ((uint64_t) packet_index->offset)) * CHAR_BIT;
+		if (packet_index->packet_size > remaining_file_size) {
+			fflush(stdout);
+			ctf_print_truncated_packet(stderr, &file_stream->parent,
+					packet_index->packet_size,
+					remaining_file_size);
+			pos->offset = EOF;
+			ret = -BT_PACKET_SEEK_ERROR_TRUNCATED_PACKET;
+			goto end;
+		}
+
 		pos->content_size = packet_index->content_size;
 		pos->packet_size = packet_index->packet_size;
 		pos->mmap_offset = packet_index->offset;
@@ -1177,7 +1240,8 @@ void ctf_packet_seek(struct bt_stream_pos *stream_pos, size_t index, int whence)
 			goto read_next_packet;
 		} else {
 			pos->offset = EOF;
-			return;
+			ret = 0;
+			goto end;
 		}
 	}
 	/* map new base. Need mapping length from header. */
@@ -1202,6 +1266,9 @@ void ctf_packet_seek(struct bt_stream_pos *stream_pos, size_t index, int whence)
 		ret = generic_rw(&pos->parent, &file_stream->parent.stream_packet_context->p);
 		assert(!ret);
 	}
+	ret = 0;
+end:
+	bt_packet_seek_set_error(ret);
 }
 
 static
@@ -1688,8 +1755,7 @@ int stream_assign_class(struct ctf_trace *td,
 static
 int create_stream_one_packet_index(struct ctf_stream_pos *pos,
 			struct ctf_trace *td,
-			struct ctf_file_stream *file_stream,
-			size_t filesize)
+			struct ctf_file_stream *file_stream)
 {
 	struct packet_index packet_index;
 	uint64_t stream_id = 0;
@@ -1704,8 +1770,8 @@ begin:
 		first_packet = 1;
 	}
 
-	if (filesize - pos->mmap_offset < (packet_map_len >> LOG2_CHAR_BIT)) {
-		packet_map_len = (filesize - pos->mmap_offset) << LOG2_CHAR_BIT;
+	if (pos->file_length - pos->mmap_offset < (packet_map_len >> LOG2_CHAR_BIT)) {
+		packet_map_len = (pos->file_length - pos->mmap_offset) << LOG2_CHAR_BIT;
 	}
 
 	if (pos->base_mma) {
@@ -1823,7 +1889,7 @@ begin:
 			packet_index.packet_size = bt_get_unsigned_int(field);
 		} else {
 			/* Use file size for packet size */
-			packet_index.packet_size = filesize * CHAR_BIT;
+			packet_index.packet_size = pos->file_length * CHAR_BIT;
 		}
 
 		/* read content size from header */
@@ -1835,7 +1901,7 @@ begin:
 			packet_index.content_size = bt_get_unsigned_int(field);
 		} else {
 			/* Use packet size if non-zero, else file size */
-			packet_index.content_size = packet_index.packet_size ? : filesize * CHAR_BIT;
+			packet_index.content_size = packet_index.packet_size ? : pos->file_length * CHAR_BIT;
 		}
 
 		/* read timestamp begin from header */
@@ -1892,21 +1958,15 @@ begin:
 		}
 	} else {
 		/* Use file size for packet size */
-		packet_index.packet_size = filesize * CHAR_BIT;
+		packet_index.packet_size = pos->file_length * CHAR_BIT;
 		/* Use packet size if non-zero, else file size */
-		packet_index.content_size = packet_index.packet_size ? : filesize * CHAR_BIT;
+		packet_index.content_size = packet_index.packet_size ? : pos->file_length * CHAR_BIT;
 	}
 
 	/* Validate content size and packet size values */
 	if (packet_index.content_size > packet_index.packet_size) {
 		fprintf(stderr, "[error] Content size (%" PRIu64 " bits) is larger than packet size (%" PRIu64 " bits).\n",
 			packet_index.content_size, packet_index.packet_size);
-		return -EINVAL;
-	}
-
-	if (packet_index.packet_size > ((uint64_t) filesize - packet_index.offset) * CHAR_BIT) {
-		fprintf(stderr, "[error] Packet size (%" PRIu64 " bits) is larger than remaining file size (%" PRIu64 " bits).\n",
-			packet_index.packet_size, ((uint64_t) filesize - packet_index.offset) * CHAR_BIT);
 		return -EINVAL;
 	}
 
@@ -1932,7 +1992,7 @@ begin:
 
 	/* Retry with larger mapping */
 retry:
-	if (packet_map_len == ((filesize - pos->mmap_offset) << LOG2_CHAR_BIT)) {
+	if (packet_map_len == ((pos->file_length - pos->mmap_offset) << LOG2_CHAR_BIT)) {
 		/*
 		 * Reached EOF, but still expecting header/context data.
 		 */
@@ -1955,17 +2015,12 @@ int create_stream_packet_index(struct ctf_trace *td,
 			struct ctf_file_stream *file_stream)
 {
 	struct ctf_stream_pos *pos;
-	struct stat filestats;
 	int ret;
 
 	pos = &file_stream->pos;
 
-	ret = fstat(pos->fd, &filestats);
-	if (ret < 0)
-		return ret;
-
 	/* Deal with empty files */
-	if (!filestats.st_size) {
+	if (!pos->file_length) {
 		if (file_stream->parent.trace_packet_header
 				|| file_stream->parent.stream_packet_context) {
 			/*
@@ -1988,9 +2043,8 @@ int create_stream_packet_index(struct ctf_trace *td,
 		}
 	}
 
-	for (pos->mmap_offset = 0; pos->mmap_offset < filestats.st_size; ) {
-		ret = create_stream_one_packet_index(pos, td, file_stream,
-			filestats.st_size);
+	for (pos->mmap_offset = 0; pos->mmap_offset < pos->file_length; ) {
+		ret = create_stream_one_packet_index(pos, td, file_stream);
 		if (ret)
 			return ret;
 	}
@@ -2175,6 +2229,7 @@ int ctf_open_file_stream_read(struct ctf_trace *td, const char *path, int flags,
 	file_stream->pos.last_offset = LAST_OFFSET_POISON;
 	file_stream->pos.fd = -1;
 	file_stream->pos.index_fp = NULL;
+	file_stream->pos.file_length = statbuf.st_size;
 
 	strncpy(file_stream->parent.path, path, PATH_MAX);
 	file_stream->parent.path[PATH_MAX - 1] = '\0';
@@ -2482,6 +2537,10 @@ int prepare_mmap_stream_definition(struct ctf_trace *td,
 
 	/* Ask for the first packet to get the stream_id. */
 	packet_seek(&file_stream->pos.parent, 0, SEEK_SET);
+	ret = bt_packet_seek_get_error();
+	if (ret) {
+		goto end;
+	}
 	stream_id = file_stream->parent.stream_id;
 	if (stream_id >= td->streams->len) {
 		fprintf(stderr, "[error] Stream %" PRIu64 " is not declared "

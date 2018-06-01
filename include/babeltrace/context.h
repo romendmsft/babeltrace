@@ -88,6 +88,23 @@ int bt_context_add_trace(struct bt_context *ctx, const char *path,
 		FILE *metadata);
 
 /*
+ * bt_context_add_traces_recursive: Open a trace recursively
+ *
+ * Find each trace present in the subdirectory starting from the given
+ * path, and add them to the context. The packet_seek parameter can be
+ * NULL: this specify to use the default format packet_seek.
+ *
+ * Return: 0 on success, < 0 on failure, > 0 on partial failure.
+ * Unable to open toplevel: failure.
+ * Unable to open some subdirectory or file: warn and continue (partial
+ * failure);
+ */
+int bt_context_add_traces_recursive(struct bt_context *ctx, const char *path,
+		const char *format_str,
+		void (*packet_seek)(struct bt_stream_pos *pos,
+			size_t offset, int whence));
+
+/*
  * bt_context_remove_trace: Remove a trace from the context.
  *
  * Effectively closing the trace. Return negative error value if trace

@@ -80,6 +80,12 @@ static int opt_stream_intersection;
 
 static struct bt_format *fmt_read;
 
+void bt_dummy_hook(void);
+void bt_lttng_live_hook(void);
+void bt_ctf_hook(void);
+void bt_ctf_text_hook(void);
+void bt_ctf_metadata_hook(void);
+
 static
 void strlower(char *str)
 {
@@ -489,143 +495,6 @@ end:
 	return ret;
 }
 
-static GPtrArray *traversed_paths = 0;
-
-/*
- * traverse_trace_dir() is the callback function for File Tree Walk (nftw).
- * it receives the path of the current entry (file, dir, link..etc) with
- * a flag to indicate the type of the entry.
- * if the entry being visited is a directory and contains a metadata file,
- * then add the path to a global list to be processed later in
- * add_traces_recursive.
- */
-static int traverse_trace_dir(const char *fpath, const struct stat *sb,
-			int tflag, struct FTW *ftwbuf)
-{
-	int dirfd, metafd;
-	int closeret;
-
-	if (tflag != FTW_D)
-		return 0;
-
-	dirfd = open(fpath, 0);
-	if (dirfd < 0) {
-		fprintf(stderr, "[error] [Context] Unable to open trace "
-			"directory file descriptor.\n");
-		return 0;	/* partial error */
-	}
-	metafd = openat(dirfd, "metadata", O_RDONLY);
-	if (metafd < 0) {
-		closeret = close(dirfd);
-		if (closeret < 0) {
-			perror("close");
-			return -1;
-		}
-		/* No meta data, just return */
-		return 0;
-	} else {
-		int err_close = 0;
-
-		closeret = close(metafd);
-		if (closeret < 0) {
-			perror("close");
-			err_close = 1;
-		}
-		closeret = close(dirfd);
-		if (closeret < 0) {
-			perror("close");
-			err_close = 1;
-		}
-		if (err_close) {
-			return -1;
-		}
-
-		/* Add path to the global list */
-		if (traversed_paths == NULL) {
-			fprintf(stderr, "[error] [Context] Invalid open path array.\n");	
-			return -1;
-		}
-		g_ptr_array_add(traversed_paths, g_string_new(fpath));
-	}
-
-	return 0;
-}
-
-/*
- * bt_context_add_traces_recursive: Open a trace recursively
- *
- * Find each trace present in the subdirectory starting from the given
- * path, and add them to the context. The packet_seek parameter can be
- * NULL: this specify to use the default format packet_seek.
- *
- * Return: 0 on success, < 0 on failure, > 0 on partial failure.
- * Unable to open toplevel: failure.
- * Unable to open some subdirectory or file: warn and continue (partial
- * failure);
- */
-int bt_context_add_traces_recursive(struct bt_context *ctx, const char *path,
-		const char *format_str,
-		void (*packet_seek)(struct bt_stream_pos *pos,
-			size_t offset, int whence))
-{
-	int ret = 0, trace_ids = 0;
-
-	if ((strncmp(path, NET4_URL_PREFIX, sizeof(NET4_URL_PREFIX) - 1)) == 0 ||
-			(strncmp(path, NET6_URL_PREFIX, sizeof(NET6_URL_PREFIX) - 1)) == 0 ||
-			(strncmp(path, NET_URL_PREFIX, sizeof(NET_URL_PREFIX) - 1)) == 0) {
-		ret = bt_context_add_trace(ctx,
-				path, format_str, packet_seek, NULL, NULL);
-		if (ret < 0) {
-			fprintf(stderr, "[warning] [Context] cannot open trace \"%s\" "
-					"for reading.\n", path);
-		}
-		return ret;
-	}
-	/* Should lock traversed_paths mutex here if used in multithread */
-
-	traversed_paths = g_ptr_array_new();
-	ret = nftw(path, traverse_trace_dir, 10, 0);
-
-	/* Process the array if ntfw did not return a fatal error */
-	if (ret >= 0) {
-		int i;
-
-		for (i = 0; i < traversed_paths->len; i++) {
-			GString *trace_path = g_ptr_array_index(traversed_paths,
-								i);
-			int trace_id = bt_context_add_trace(ctx,
-							    trace_path->str,
-							    format_str,
-							    packet_seek,
-							    NULL,
-							    NULL);
-			if (trace_id < 0) {
-				fprintf(stderr, "[warning] [Context] cannot open trace \"%s\" from %s "
-					"for reading.\n", trace_path->str, path);
-				/* Allow to skip erroneous traces. */
-				ret = 1;	/* partial error */
-			} else {
-				trace_ids++;
-			}
-			g_string_free(trace_path, TRUE);
-		}
-	}
-
-	g_ptr_array_free(traversed_paths, TRUE);
-	traversed_paths = NULL;
-
-	/* Should unlock traversed paths mutex here if used in multithread */
-
-	/*
-	 * Return an error if no trace can be opened.
-	 */
-	if (trace_ids == 0) {
-		fprintf(stderr, "[error] Cannot open any trace for reading.\n\n");
-		ret = -ENOENT;		/* failure */
-	}
-	return ret;
-}
-
 static
 int trace_pre_handler(struct bt_trace_descriptor *td_write,
 		  struct bt_context *ctx)
@@ -695,6 +564,7 @@ int convert_trace(struct bt_trace_descriptor *td_write,
 	struct bt_iter_pos *begin_pos = NULL, *end_pos = NULL;
 	struct bt_ctf_event *ctf_event;
 	int ret;
+	int error_holder = 0;
 
 	sout = container_of(td_write, struct ctf_text_stream_pos,
 			trace_descriptor);
@@ -721,11 +591,18 @@ int convert_trace(struct bt_trace_descriptor *td_write,
 			goto end;
 		}
 		ret = bt_iter_next(bt_ctf_get_iter(iter));
-		if (ret < 0) {
+		if (ret == -ERANGE) {
+			/*
+			 * Remember that a range (truncated packet)
+			 * error occurred and continue.
+			 */
+			error_holder = 1;
+			continue;
+		} else if (ret < 0) {
 			goto end;
 		}
 	}
-	ret = 0;
+	ret = error_holder;
 
 end:
 	bt_ctf_iter_destroy(iter);
@@ -735,6 +612,15 @@ error_iter:
 	return ret;
 }
 
+void call_plugins_hooks(void)
+{
+	bt_dummy_hook();
+	bt_lttng_live_hook();
+	bt_ctf_hook();
+	bt_ctf_text_hook();
+	bt_ctf_metadata_hook();
+}
+
 int main(int argc, char **argv)
 {
 	int ret, partial_error = 0, open_success = 0;
@@ -742,6 +628,8 @@ int main(int argc, char **argv)
 	struct bt_trace_descriptor *td_write;
 	struct bt_context *ctx;
 	int i;
+
+	call_plugins_hooks();
 
 	opt_input_paths = g_ptr_array_new();
 

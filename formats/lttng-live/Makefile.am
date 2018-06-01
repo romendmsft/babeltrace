@@ -11,7 +11,9 @@ libbabeltrace_lttng_live_la_SOURCES = \
 
 # Request that the linker keeps all static libraries objects.
 libbabeltrace_lttng_live_la_LDFLAGS = \
+	$(LT_NO_UNDEFINED) \
 	$(LD_NO_AS_NEEDED) -version-info $(BABELTRACE_LIBRARY_VERSION)
 
 libbabeltrace_lttng_live_la_LIBADD = \
-	$(top_builddir)/lib/libbabeltrace.la
+	$(top_builddir)/lib/libbabeltrace.la \
+	$(top_builddir)/formats/ctf/libbabeltrace-ctf.la

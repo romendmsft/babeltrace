@@ -1,3 +1,47 @@
+2018-01-31 babeltrace 1.5.4 (Gorilla Suit Day)
+	* Fix: use signed accessors for clock offsets
+	* Fix: signedness error in python complements
+	* Fix: handle packet_seek errors
+	* Fix: prevent calling adding the same trace recursively
+	* Fix: Make sure we have all the metadata streams before adding new traces
+	* Add missing debugging information in the live plugin
+	* Fix: set stream id in HUP case
+	* Fix: Use list rather than ptr array for trace streams
+	* Fix: leak of streams
+	* Fix: handle 0 session case in ask new streams
+	* Fix: break loop on getting metadata error
+	* Fix: return error on ask_new_stream when should quit
+	* Fix: don't access missing ctf trace when getting metadata
+	* Fix: lttng-live discarded event count after inactivity
+	* Fix: timegm compat on Solaris
+	* Fix: python bindings when building with PIE hardening
+	* lttng-live: print discarded event and packet lost warnings on stderr
+
+2017-08-04 lttng-tools 1.5.3 (International Beer Day)
+	* Fix: unknown variable name in Python writer
+	* Fix live-comm: only apply retry timeout for already seen inactive indexes.
+	* Fix live-comm: merge TCP socket write-write sequence in a single write
+	* Fix: use LDFLAGS instead of LIBS for python bindings
+	* Fix: Add missing LIBS to python bindings
+	* ax_lib_elfutils -> bt_lib_elfutils
+	* m4/ax_lib_elfutils.m4: use m4_default() for optional args.
+	* m4/ax_lib_elfutils.m4: add cache variable
+	* Build Python bindings with distutils for consistent installs
+	* Set the minimum Python version to 3.0
+	* Fix: disable debug by default info on Cygwin
+	* Fix: ctf writer test on Cygwin
+	* Fix: text output missing separator when printing the domain
+
+2017-02-20 babeltrace 1.5.2 (National Cherry Pie Day)
+	* Add empty plug-in hooks to prevent their elimination by the linker
+	* Port: Link live lib with ctf to satisfy cygwin linker
+	* Port: Link with no-undefined on Windows
+	* Port: win32 DLLs don't support hidden symbols
+	* Port: replace strerror_r() with glib g_strerror()
+
+2017-01-06 babeltrace 1.5.1 ("Wheel Of Fortune" debuts on NBC)
+	* Fix: perform an explicit stdout flush in live even on empty packets
+
 2016-11-29 babeltrace 1.5.0 (National Square Dance Day)
 	* Fix: remove BT_HIDDEN from bt_value_null singleton declaration
 	* Fix mixing of bt_ctf_scope and bt_ctf_ir_scope enums

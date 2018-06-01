@@ -144,6 +144,14 @@ struct ctf_callsite_dups *ctf_trace_callsite_lookup(struct ctf_trace *trace,
 			(gpointer) (unsigned long) callsite_name);
 }
 
+void bt_ctf_text_hook(void)
+{
+	/*
+	 * Dummy function to prevent the linker from discarding this format as
+	 * "unused" in static builds.
+	 */
+}
+
 int print_field(struct bt_definition *definition)
 {
 	/* Print all fields in verbose mode */
@@ -418,6 +426,8 @@ int ctf_text_write_event(struct bt_stream_pos *ppos, struct ctf_stream_definitio
 		set_field_names_print(pos, ITEM_HEADER);
 		if (pos->print_names) {
 			fprintf(pos->fp, "trace:domain = ");
+		} else if (dom_print) {
+			fprintf(pos->fp, ":");
 		}
 		fprintf(pos->fp, "%s", stream_class->trace->env.domain);
 		if (pos->print_names)

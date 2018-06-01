@@ -103,6 +103,11 @@ const struct bt_definition *bt_ctf_get_top_level_scope(const struct bt_ctf_event
 const char *bt_ctf_event_name(const struct bt_ctf_event *event);
 
 /*
+ * bt_ctf_event_loglevel: returns the loglevel of the event or -EINVAL on error
+ */
+int bt_ctf_event_loglevel(const struct bt_ctf_event *ctf_event);
+
+/*
  * bt_ctf_get_cycles: returns the timestamp of the event as written
  * in the packet (in cycles) or -1ULL on error.
  */
@@ -269,6 +274,11 @@ int bt_ctf_get_event_decl_list(int handle_id, struct bt_context *ctx,
  * bt_ctf_get_decl_event_name: return the name of the event or NULL on error
  */
 const char *bt_ctf_get_decl_event_name(const struct bt_ctf_event_decl *event);
+
+/*
+ * bt_ctf_get_decl_event_loglevel: returns the loglevel of the event or -EINVAL on error
+ */
+int bt_ctf_get_decl_event_loglevel(const struct bt_ctf_event_decl *event);
 
 /*
  * bt_ctf_get_decl_fields: get all field declarations in a scope of an event

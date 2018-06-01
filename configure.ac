@@ -1,5 +1,5 @@
 AC_PREREQ([2.50])
-AC_INIT([babeltrace],[1.5.0],[jeremie.galarneau@efficios.com],[],[https://diamon.org/babeltrace])
+AC_INIT([babeltrace],[1.5.4],[jeremie.galarneau@efficios.com],[],[https://diamon.org/babeltrace])
 AC_SUBST([BABELTRACE_LIBRARY_VERSION], [1:0:0])
 
 AC_CONFIG_HEADERS([config.h])
@@ -97,7 +97,6 @@ AC_FUNC_MALLOC
 AC_FUNC_MKTIME
 AC_FUNC_MMAP
 AC_FUNC_REALLOC
-AC_FUNC_STRERROR_R
 AC_CHECK_FUNCS([ \
 	atexit \
 	dirfd \
@@ -129,6 +128,7 @@ AC_CHECK_FUNCS([ \
 
 MINGW32=no
 DEFAULT_ENABLE_DEBUG_INFO=yes
+LT_NO_UNDEFINED=""
 AS_CASE([$host_os],
   [solaris*|darwin*],
     [
@@ -137,10 +137,17 @@ AS_CASE([$host_os],
   [mingw*],
     [
 	MINGW32=yes
+	LT_NO_UNDEFINED="-no-undefined"
+    ],
+  [cygwin*],
+    [
+	LT_NO_UNDEFINED="-no-undefined"
+	DEFAULT_ENABLE_DEBUG_INFO=no
     ]
 )
 
 AM_CONDITIONAL([BABELTRACE_BUILD_WITH_MINGW], [test "x$MINGW32" = "xyes"])
+AC_SUBST(LT_NO_UNDEFINED)
 
 # Check what libraries are required on this platform to link sockets programs.
 AX_LIB_SOCKET_NSL
@@ -233,13 +240,8 @@ AM_CONDITIONAL([USE_PYTHON], [test "x${enable_python:-yes}" = xyes])
 
 if test "x${enable_python:-yes}" = xyes; then
   AX_PKG_SWIG($swig_version, [], [ AC_MSG_ERROR([SWIG $swig_version or newer is needed]) ])
-  AM_PATH_PYTHON
+  AM_PATH_PYTHON([3.0], [], [ AC_MSG_ERROR([Python 3.0 or newer is needed]) ])
 
-  AM_PATH_PYTHON_MODULES([PYTHON])
-  # pythondir is the path where extra modules are to be installed
-  pythondir=$PYTHON_PREFIX/$PYTHON_MODULES_PATH
-  # pyexecdir is the path that contains shared objects used by the extra modules
-  pyexecdir=$PYTHON_EXEC_PREFIX/$PYTHON_MODULES_PATH
   AC_ARG_VAR([PYTHON_INCLUDE], [Include flags for python, bypassing python-config])
   AC_ARG_VAR([PYTHON_CONFIG], [Path to python-config])
   AS_IF([test -z "$PYTHON_INCLUDE"], [
@@ -279,7 +281,7 @@ AS_IF([test "x$_enable_debug_info" = xyes], [
 	    # Check if libelf and libdw are present
 	    AC_CHECK_LIB([elf], [elf_version], [], [AC_MSG_ERROR(Missing libelf (from elfutils >= 0.154) which is required by debug info. You can disable this feature using --disable-debug-info.)])
 	    AC_CHECK_LIB([dw], [dwarf_begin], [], [AC_MSG_ERROR(Missing libdw (from elfutils >= 0.154) which is required by debug info. You can disable this feature using --disable-debug-info.)])
-	    AX_LIB_ELFUTILS([0], [154], [], [AC_MSG_ERROR(elfutils >= 0.154 is required to use the debug info feature. You can disable this feature using --disable-debug-info.)])
+	    BT_LIB_ELFUTILS([0], [154], [:], [AC_MSG_ERROR(elfutils >= 0.154 is required to use the debug info feature. You can disable this feature using --disable-debug-info.)])
             AC_DEFINE([ENABLE_DEBUG_INFO], [1], [Define to 1 if you enable the 'debug info' feature])
 ], [])
 
@@ -327,7 +329,9 @@ AC_CONFIG_FILES([
 	include/Makefile
 	bindings/Makefile
 	bindings/python/Makefile
+	bindings/python/setup.py
 	bindings/python/babeltrace/Makefile
+	bindings/python/babeltrace/__init__.py
 	tests/Makefile
 	tests/bin/Makefile
 	tests/bin/intersection/Makefile
@@ -350,6 +354,13 @@ AC_CONFIG_FILES([tests/bin/test_trace_read], [chmod +x tests/bin/test_trace_read
 AC_CONFIG_FILES([tests/bin/intersection/test_intersection], [chmod +x tests/bin/intersection/test_intersection])
 AC_CONFIG_FILES([tests/bin/intersection/bt_python_helper.py])
 AC_CONFIG_FILES([tests/bin/test_packet_seq_num], [chmod +x tests/bin/test_packet_seq_num])
+
+# Create link for Babeltrace complements files for out-of-tree builds
+AC_CONFIG_LINKS([
+	bindings/python/babeltrace/python-complements.c:bindings/python/babeltrace/python-complements.c
+	bindings/python/babeltrace/python-complements.h:bindings/python/babeltrace/python-complements.h
+	bindings/python/babeltrace/babeltrace.i.in:bindings/python/babeltrace/babeltrace.i.in
+])
 
 AC_OUTPUT
 
